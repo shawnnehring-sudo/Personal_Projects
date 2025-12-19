@@ -4,90 +4,50 @@
 
 using namespace cv;
 using namespace std;
-namespace fs = std::filesystem;
 
 int main() {
-    string imagePath = "fish1.jpg";
-    fs::create_directories("green");
-    fs::create_directories("red");
-
-    // 1. Pop up the photo
-    Mat img = imread(imagePath);
-    if (img.empty()) {
-        cout << "Could not find the image!" << endl;
-        return -1;
-    }
-    namedWindow("Reviewing Image", WINDOW_AUTOSIZE);
-    imshow("Reviewing Image", img);
-    moveWindow("Reviewing Image", 50, 50); // Position on left
-    waitKey(1000);
-
-    VideoCapture cap(0);
-    Mat frame, gray, prevGray, diff, thresh;
-    Point2f initialPos(-1, -1), currentPos(-1, -1);
-    bool fishMoved = false;
-
-    cout << "Looking for the fish..." << endl;
-
-    auto startTime = chrono::steady_clock::now();
-    while (chrono::steady_clock::now() - startTime < chrono::seconds(5)) {
-        cap >> frame;
-        if (frame.empty()) break;
-
-        cvtColor(frame, gray, COLOR_BGR2GRAY);
-        GaussianBlur(gray, gray, Size(21, 21), 0); // Smooth out water ripples
-
-        if (prevGray.empty()) {
-            prevGray = gray.clone();
-            continue;
+    // 1. Initialize camera ONCE outside the loop
+    VideoCapture cap(0); 
+    
+    // Check if the camera actually opened
+    if (!cap.isOpened()) {
+        cout << "ERROR: Could not open camera! Trying index 1..." << endl;
+        cap.open(1); // Try the next index if 0 fails
+        if (!cap.isOpened()) {
+            cout << "CRITICAL ERROR: No camera found." << endl;
+            return -1;
         }
+    }
 
-        // Detect the movement "blobs"
-        absdiff(prevGray, gray, diff);
-        threshold(diff, thresh, 25, 255, THRESH_BINARY);
-        dilate(thresh, thresh, Mat(), Point(-1, -1), 2); // Make the fish "thicker"
+    // Give the camera a moment to warm up/auto-focus
+    Mat warmup;
+    for(int i=0; i<10; i++) cap >> warmup;
 
-        vector<vector<Point>> contours;
-        findContours(thresh, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+    for (int i = 0; i < 10; i++) {
+        // ... [Your Filename and Big Image Popup Logic] ...
 
-        for (const auto& contour : contours) {
-            if (contourArea(contour) > 1000) { // Only track things "fish-sized"
-                // Get the center of the fish
-                Moments m = moments(contour);
-                currentPos = Point2f(m.m10 / m.m00, m.m01 / m.m00);
+        Mat frame, gray, prevGray, diff, thresh;
+        auto startTime = chrono::steady_clock::now();
 
-                // Set the starting position if it's the first time seeing the fish
-                if (initialPos.x == -1) {
-                    initialPos = currentPos;
-                }
+        cout << "Starting tracking for Beta " << (i+1) << "..." << endl;
 
-                // Calculate distance from start
-                float dist = norm(initialPos - currentPos);
-                
-                // Draw the tracking visuals
-                rectangle(frame, boundingRect(contour), Scalar(0, 255, 0), 2);
-                line(frame, initialPos, currentPos, Scalar(0, 0, 255), 2);
-                
-                if (dist > 50) { // If fish moved 50 pixels from start
-                    fishMoved = true;
-                }
+        while (chrono::steady_clock::now() - startTime < chrono::seconds(5)) {
+            cap >> frame; // Grab current frame
+            if (frame.empty()) {
+                cout << "Lost camera feed!" << endl;
+                break;
             }
+
+            // ... [Your Motion Tracking Logic] ...
+
+            imshow("Fish Tracker", frame);
+            if (waitKey(30) == 27) return 0; // Esc to quit entirely
+            prevGray = gray.clone();
         }
 
-        imshow("Fish Tracker", frame);
-        if (fishMoved || waitKey(30) == 27) break;
-        prevGray = gray.clone();
+        // ... [Your Sorting Logic] ...
     }
 
-    // 3. Sorting Result
-    string destination = (fishMoved ? "green/" : "red/") + imagePath;
-    try {
-        if (fs::exists(imagePath)) {
-            fs::rename(imagePath, destination);
-            cout << (fishMoved ? "FISH MOVED: Saved to Green" : "STAYED STILL: Saved to Red") << endl;
-        }
-    } catch (...) {}
-
-    destroyAllWindows();
+    cap.release(); // Explicitly close the camera when done
     return 0;
 }
