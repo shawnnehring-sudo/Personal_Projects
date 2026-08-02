@@ -4,10 +4,11 @@ import clip
 from PIL import Image
 import cv2
 import numpy as np
-
+#NOT THIS ONE USE THE OTHER ONE
 def get_picture():
     cap = cv2.VideoCapture(0)
     pict = None
+
     while True:
         ret, frame = cap.read()
         if not ret:

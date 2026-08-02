@@ -57,7 +57,7 @@ def get_picture():
             face_image = pict[top:bottom, left:right]
             face_pil = Image.fromarray(face_image)
             face_pil = face_pil.convert("L")
-            face_pil.save("LookALike/pers_pict.jpg")
+            face_pil.save("pers_pict.jpg")
         else:
             print("No face detected. Saving full image instead.")
             Image.fromarray(pict).save("LookALike/pers_pict.jpg")
@@ -75,7 +75,7 @@ def compare_picture():
         return torch.mean(torch.stack(tensors), dim=0)
 
     # Person image
-    face_img = Image.open("LookALike/pers_pict.jpg").convert("RGB")
+    face_img = Image.open("pers_pict.jpg").convert("RGB")
     face_tensor = preprocess(face_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
@@ -84,8 +84,8 @@ def compare_picture():
         person_features /= person_features.norm()
 
         # Image-to-Image Comparison
-        frog_features = encode_avg(["LookALike/frog1.jpg", "LookALike/frog2.jpg", "LookALike/frog3.jpg"])
-        rat_features  = encode_avg(["LookALike/rat1.jpg",  "LookALike/rat2.jpg",  "LookALike/rat3.jpg"])
+        frog_features = encode_avg(["frog1.jpg", "frog2.jpg", "frog3.jpg"])
+        rat_features  = encode_avg(["rat1.jpg",  "rat2.jpg",  "rat3.jpg"])
         frog_features /= frog_features.norm()
         rat_features  /= rat_features.norm()
 
@@ -100,12 +100,12 @@ def compare_picture():
     #print()
 
 
-    if z_frog > z_rat:
+    if abs(z_frog) < abs(z_rat):
         print("🐸 You look more like a frog!")
     else:
         print("🐭 You look more like a rat!")
-    print (f"here is thestandard deviation for rat",z_rat)
-    print(f"here is thestandard deviation for frog",z_frog)
+    print (f"here is the standard deviation for rat",z_rat)
+    print(f"here is the standard deviation for frog",z_frog)
 
 
 get_picture()
