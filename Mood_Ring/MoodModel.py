@@ -16,26 +16,27 @@ import sys
 import numpy as np
 import pandas as pd
 import joblib
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-
 DATASET_FILE = "heart_mood_dataset.csv"
 
 # These must exactly match the columns HeartRateEngine.get_features() produces,
 # in the same order, minus 'timestamp' and 'label'.
 FEATURE_COLUMNS = [
     "mean_hr", "std_hr", "mean_rr", "sdnn",
-    "rmssd", "pnn50", "hr_slope", "instant_delta_bpm",
+    "rmssd"
 ]
 
-MIN_ROWS_TO_TRAIN = 40          # below this, a DNN will just memorize noise
-MIN_ROWS_PER_CLASS_WARNING = 10  # heads-up if any mood is underrepresented
+MIN_ROWS_TO_TRAIN = 10          # below this, a DNN will just memorize noise
+MIN_ROWS_PER_CLASS_WARNING = 3  # heads-up if any mood is underrepresented
 
 
 def load_dataset():
     df = pd.read_csv(DATASET_FILE)
-
     missing_cols = [c for c in FEATURE_COLUMNS + ["label"] if c not in df.columns]
     if missing_cols:
         sys.exit(

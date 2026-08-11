@@ -2,12 +2,17 @@ import time
 import threading
 import csv
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import random
 import numpy as np
 import joblib
 import tensorflow as tf
 from collections import deque
 from flask import Flask, render_template_string, jsonify, request
+import subprocess
+training_status = "idle"   # idle | training | done | error
+status_lock = threading.Lock()
 
 # ==========================================
 # 1. BACKGROUND SENSOR & BUFFER ENGINE
@@ -73,11 +78,11 @@ class HeartRateEngine:
             rr_diffs = np.diff(rrs)
             rmssd = float(np.sqrt(np.mean(rr_diffs ** 2))) if len(rr_diffs) > 0 else 0.0
 
-            if len(rr_diffs) > 0:
-                nn50_count = np.sum(np.abs(rr_diffs) > 50.0)
-                pnn50 = float(100.0 * nn50_count / len(rr_diffs))
-            else:
-                pnn50 = 0.0
+            #if len(rr_diffs) > 0:
+                #nn50_count = np.sum(np.abs(rr_diffs) > 50.0)
+                #pnn50 = float(100.0 * nn50_count / len(rr_diffs))
+            #else:
+                #pnn50 = 0.0
 
             rel_time = timestamps - timestamps[0]
             if np.ptp(rel_time) > 0:
@@ -94,9 +99,9 @@ class HeartRateEngine:
                 "mean_rr": round(mean_rr, 2),
                 "sdnn": round(sdnn, 2),
                 "rmssd": round(rmssd, 2),
-                "pnn50": round(pnn50, 2),
-                "hr_slope": round(hr_slope, 3),
-                "instant_delta_bpm": round(instant_delta_bpm, 2),
+                #"pnn50": round(pnn50, 2),
+                #"hr_slope": round(hr_slope, 3),
+                #"instant_delta_bpm": round(instant_delta_bpm, 2),
             }
 
 engine = HeartRateEngine(window_seconds=30)
@@ -107,9 +112,52 @@ engine = HeartRateEngine(window_seconds=30)
 # Must match FEATURE_COLUMNS in train_mood_model.py exactly -- same names,
 # same order. This is the seam between training and inference: if you add
 # a feature to get_features() above, add it here and retrain.
+
+def load_model_artifacts():
+    """(Re)loads model/scaler/encoder from disk into the module globals.
+    Called once at startup, and again after a training run finishes."""
+    global model, scaler, label_encoder
+    if all(os.path.exists(f) for f in (MODEL_FILE, SCALER_FILE, ENCODER_FILE)):
+        try:
+            model = tf.keras.models.load_model(MODEL_FILE)
+            scaler = joblib.load(SCALER_FILE)
+            label_encoder = joblib.load(ENCODER_FILE)
+            print(f"Loaded trained model. Mood classes: {list(label_encoder.classes_)}")
+            return True
+        except Exception as e:
+            print(f"Found model files but failed to load them: {e}")
+            model = scaler = label_encoder = None
+            return False
+    return False
+
+def run_training_job():
+    """Runs in a background thread: shells out to the training script,
+    waits for it to finish, then hot-reloads the resulting model."""
+    global training_status
+    training_status = "training"
+    try:
+        result = subprocess.run(
+            ["python", "MoodModel.py"],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print("Training failed:\n", result.stderr)
+            training_status = "error"
+            return
+        print(result.stdout)
+        if load_model_artifacts():
+            training_status = "done"
+        else:
+            training_status = "error"
+    except Exception as e:
+        print(f"Training job crashed: {e}")
+        training_status = "error"
+
+
+
 FEATURE_COLUMNS = [
     "mean_hr", "std_hr", "mean_rr", "sdnn",
-    "rmssd", "pnn50", "hr_slope", "instant_delta_bpm",
+    "rmssd"
 ]
 
 MODEL_FILE = "mood_model.keras"
@@ -119,18 +167,7 @@ ENCODER_FILE = "mood_label_encoder.pkl"
 model = None
 scaler = None
 label_encoder = None
-
-if all(os.path.exists(f) for f in (MODEL_FILE, SCALER_FILE, ENCODER_FILE)):
-    try:
-        model = tf.keras.models.load_model(MODEL_FILE)
-        scaler = joblib.load(SCALER_FILE)
-        label_encoder = joblib.load(ENCODER_FILE)
-        print(f"Loaded trained model. Mood classes: {list(label_encoder.classes_)}")
-    except Exception as e:
-        print(f"Found model files but failed to load them: {e}")
-        model = scaler = label_encoder = None
-else:
-    print("No trained model found yet -- inference will be unavailable until you run train_mood_model.py")
+load_model_artifacts()
 
 
 def predict_mood(features: dict):
@@ -165,14 +202,14 @@ DATASET_FILE = "heart_mood_dataset.csv"
 # When False, /log_mood is disabled and the training UI hides itself.
 # Lives only in memory -- resets to True on server restart, since a fresh
 # process shouldn't silently assume you're done collecting data.
-training_enabled = True
+train = False
 
 if not os.path.exists(DATASET_FILE):
-    with open(DATASET_FILE, "w", newline="") as f:
+    with open(DATASET_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "timestamp", "mean_hr", "std_hr", "mean_rr", "sdnn", "rmssd",
-            "pnn50", "hr_slope", "instant_delta_bpm", "label"
+            "mean_hr", "std_hr", "mean_rr", "sdnn", "rmssd",
+            "label",
         ])
 
 HTML_UI = """
@@ -187,10 +224,10 @@ HTML_UI = """
         button { padding: 25px; font-size: 18px; font-weight: bold; border: none; border-radius: 12px; cursor: pointer; color: white; transition: transform 0.1s; }
         button:active { transform: scale(0.95); }
         .calm { background: #47d6d4; }
-        .happy { background: #edf507; }
+        .happy { background: #d2d90f; }
         .sad { background: #3509b7; }
         .angry { background: #b70926; }
-        .love { background: #b70969; }
+        .excited { background: #b70969; }
         .neutral { background: #666666; }
         .drained { background: #3d0680; }
         .anxious { background: #3ac71e; }
@@ -212,12 +249,13 @@ HTML_UI = """
         input:checked + .slider { background: #2ec4b6; }
         input:checked + .slider::before { transform: translateX(20px); }
         #training-section.hidden { display: none; }
+        #predict-panel.hidden { display: none; }
     </style>
 </head>
 <body>
     <h2>Heart Rate Mood Logger</h2>
 
-    <div class="panel">
+    <div class="panel hidden" id="predict-panel">
         <h3>Live prediction</h3>
         <div id="live-mood">--</div>
         <div id="live-confidence">Waiting for data...</div>
@@ -235,14 +273,14 @@ HTML_UI = """
     <div id="training-section">
         <p>Tap your current emotion to tag the active 30s window for training:</p>
         <div class="grid">
-            <button class="calm" onclick="logMood('Calm')">Calm</button>
-            <button class="happy" onclick="logMood('Happy')">Happy</button>
-            <button class="anxious" onclick="logMood('Atressed')">Atressed</button>
-            <button class="sad" onclick="logMood('Sad')">Sad</button>
-            <button class="angry" onclick="logMood('Angry')">Angry</button>
-            <button class="love" onclick="logMood('Love')">Love</button>
-            <button class="neutral" onclick="logMood('Neutral')">Neutral</button>
-            <button class="drained" onclick="logMood('Drained')">Drained</button>
+            <button class="calm" onclick="logMood('Calm')">Calm \U0001F60C</button>
+            <button class="happy" onclick="logMood('Happy')">Happy \U0001F604</button>
+            <button class="stressed" onclick="logMood('Stressed')">Stressed \U0001FAE0</button>
+            <button class="sad" onclick="logMood('Sad')">Sad \U0001F622</button>
+            <button class="angry" onclick="logMood('Angry')">Angry \U0001F621</button>
+            <button class="excited" onclick="logMood('Excited')">Excited \U0001F929</button>
+            <button class="neutral" onclick="logMood('Neutral')">Neutral \U0001F610</button>
+            <button class="drained" onclick="logMood('Drained')">Drained \U0001FAE9</button>
         </div>
         <div id="status" class="status">System running in background...</div>
     </div>
@@ -274,7 +312,7 @@ HTML_UI = """
 
                     if (data.status === 'no_model') {
                         moodEl.innerText = '--';
-                        confEl.innerText = 'No trained model yet -- run train_mood_model.py';
+                        confEl.innerText = 'No trained model yet -- run MoodModel.py';
                         barsEl.innerHTML = '';
                     } else if (data.status === 'warming_up') {
                         moodEl.innerText = '--';
@@ -302,20 +340,32 @@ HTML_UI = """
             document.getElementById('training-toggle').checked = enabled;
         }
 
+        function applyPredictVisibility(modelLoaded) {
+            document.getElementById('predict-panel').classList.toggle('hidden', !modelLoaded);
+        }   
+
+        function pollStatus() {
+            fetch('/status')
+                .then(res => res.json())
+                .then(data => {
+                    applyTrainingVisibility(data.train);
+                    applyPredictVisibility(!data.train && data.model_loaded);
+                });
+        }
+
+        pollStatus();
+        setInterval(pollStatus, 2000);
+
         function setTrainingMode(enabled) {
             fetch('/set_training_mode', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ enabled: enabled })
             })
-            .then(res => res.json())
-            .then(data => applyTrainingVisibility(data.training_enabled));
+            .then(() => pollStatus());
         }
 
         // On page load, sync the toggle and panel to whatever the server currently has set
-        fetch('/status')
-            .then(res => res.json())
-            .then(data => applyTrainingVisibility(data.training_enabled));
 
         refreshPrediction();
         setInterval(refreshPrediction, 2000);
@@ -333,25 +383,35 @@ def stop_engine():
     engine.running = False
     return jsonify({"message": "Sensor loop paused!"})
 
-@app.route('/status', methods=['GET'])
-def status():
-    # Lets the page know, on load, whether to show the training controls
-    return jsonify({
-        "training_enabled": training_enabled,
-        "model_loaded": model is not None,
-    })
-
 @app.route('/set_training_mode', methods=['POST'])
 def set_training_mode():
-    global training_enabled
+    global train
     data = request.json or {}
-    training_enabled = bool(data.get('enabled', True))
-    return jsonify({"training_enabled": training_enabled})
+    new_value = bool(data.get('enabled', True))
+    was_enabled = train
+    train = new_value
+
+    # Flip OFF -> ON now kicks off training in the background
+    if not was_enabled and new_value:
+        threading.Thread(target=run_training_job, daemon=True).start()
+
+    return jsonify({"train": train, "training_status": training_status})
+
+@app.route('/status', methods=['GET'])
+def status():
+    return jsonify({
+        "train": train,
+        "model_loaded": model is not None,
+        "training_status": training_status,
+    })
+
+#checks if MoodModel is running and then turns off or on depending on training_enabled
+
 
 @app.route('/log_mood', methods=['POST'])
 def log_mood():
     # Tagged by a human -- this is training data collection
-    if not training_enabled:
+    if not train:
         return jsonify({"message": "Training mode is off -- turn it back on to log data."}), 403
 
     data = request.json
@@ -361,18 +421,17 @@ def log_mood():
     if features is None:
         return jsonify({"message": "Buffer still warming up! Wait a few seconds..."}), 400
 
-    with open(DATASET_FILE, "a", newline="") as f:
+    with open(DATASET_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
-            time.time(),
             features['mean_hr'],
             features['std_hr'],
             features['mean_rr'],
             features['sdnn'],
             features['rmssd'],
-            features['pnn50'],
-            features['hr_slope'],
-            features['instant_delta_bpm'],
+            #features['pnn50'],
+            #features['hr_slope'],
+            #features['instant_delta_bpm'],
             mood
         ])
 
@@ -385,14 +444,13 @@ def log_mood():
 
 @app.route('/predict_mood', methods=['GET'])
 def predict_mood_route():
-    # Not tagged by a human -- this is live inference using the trained model
     if model is None:
         return jsonify({"status": "no_model"})
-
+    if train:
+        return jsonify({"status": "training_mode"})
     features = engine.get_features()
     if features is None:
         return jsonify({"status": "warming_up"})
-
     result = predict_mood(features)
     result["status"] = "ok"
     return jsonify(result)
