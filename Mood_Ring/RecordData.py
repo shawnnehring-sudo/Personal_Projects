@@ -24,37 +24,33 @@ class HeartRateEngine:
     logger and the live inference route read from this same engine --
     it's the single source of truth for HRV features either way.
     """
+    def ingest_reading(self, raw_value):
+        """Called by the /sensor_data route when the ESP32 posts a new sample.
+        Does simple peak detection to estimate BPM from consecutive raw values."""
+        now = time.time()
+        with self.lock:
+            self._raw_buffer.append((now, raw_value))
+            # keep last ~3 seconds of raw samples for peak detection
+            while self._raw_buffer and (now - self._raw_buffer[0][0]) > 3.0:
+                self._raw_buffer.pop(0)
 
-    def __init__(self, window_seconds=30):
-        self.window_seconds = window_seconds
-        self.buffer = deque()   # each entry: (timestamp, bpm, rr_ms)
-        self.lock = threading.Lock()
-        self.running = True
-
-        self.thread = threading.Thread(target=self._sensor_loop, daemon=True)
-        self.thread.start()
-
-    def _sensor_loop(self):
-        """Simulates continuously reading a physical sensor every 1 second in the background.
-
-        TODO: replace the MOCK SENSOR block below with your real read from
-        the DEVMO Pulse Sensor.
-        """
-        base_bpm = 72.0
-        while self.running:
-            now = time.time()
-
-            # --- MOCK SENSOR LOGIC ---
-            current_bpm = base_bpm + random.uniform(-3.0, 3.0)
-            rr_ms = (60.0 / current_bpm) * 1000.0
-            # -------------------------
-
-            with self.lock:
-                self.buffer.append((now, current_bpm, rr_ms))
+            bpm = self._detect_bpm_from_raw()
+            if bpm is not None:
+                rr_ms = (60.0 / bpm) * 1000.0
+                self.buffer.append((now, bpm, rr_ms))
                 while self.buffer and (now - self.buffer[0][0]) > self.window_seconds:
                     self.buffer.popleft()
 
-            time.sleep(1.0)
+    def __init__(self, window_seconds=30):
+        self.window_seconds = window_seconds
+        self.buffer = deque()        # holds (timestamp, bpm, rr_ms) -- same as before
+        self._raw_buffer = []        # NEW: holds recent raw ADC values for peak detection
+        self.lock = threading.Lock()
+        self.running = True
+        # NOTE: no more self.thread / self._sensor_loop -- the ESP32 pushes data in now,
+        # instead of this class pulling/generating it on a timer
+
+
 
     def get_features(self):
         """Thread-safe extraction of HRV features from the active window.
@@ -407,6 +403,15 @@ def status():
 
 #checks if MoodModel is running and then turns off or on depending on training_enabled
 
+@app.route('/sensor_data', methods=['POST'])
+def sensor_data():
+    data = request.json
+    raw_value = data.get('raw_value')
+    if raw_value is None:
+        return jsonify({"error": "missing raw_value"}), 400
+
+    engine.ingest_reading(raw_value)
+    return jsonify({"status": "ok"})
 
 @app.route('/log_mood', methods=['POST'])
 def log_mood():
