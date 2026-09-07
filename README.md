@@ -1,2 +1,2 @@
 # Personal_Projects
-Personal project that i work on
+Personal project that I work on.
